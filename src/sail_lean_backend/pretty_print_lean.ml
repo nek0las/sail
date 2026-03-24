@@ -580,12 +580,24 @@ let rec doc_pat ?(need_parens = false) ?(in_vector = false) ctx in_match_bv (P_a
   | P_vector_concat pats -> doc_vector_concat pats
   | P_app (Id_aux (Id "None", _), p) -> string "none"
   | P_app (cons, pats) ->
-      opt_parens
-        (string "."
-        ^^ doc_id_ctor (fixup_match_id cons)
-        ^^ space
-        ^^ separate_map (string ", ") (doc_pat ~need_parens:true ctx in_match_bv) pats
-        )
+      (* Adapted from doc_pat/doc_pat_no_existential in pretty_print_coq.ml:
+         if the constructor's argument type is an existential, wrap the inner
+         pattern with ⟨_, inner⟩ for each relevant bound variable. *)
+      let matched_typ = typ_of_annot (l, annot) in
+      let relevant_kids =
+        if Env.is_union_constructor cons env then
+          let arg_typ = typ_of_constructor env cons matched_typ l in
+          fst (relevant_type_vars arg_typ)
+        else []
+      in
+      let inner_pp = separate_map (string ", ") (doc_pat ~need_parens:true ctx in_match_bv) pats in
+      let inner_pp = match pats with [_] -> inner_pp | _ -> parens inner_pp in
+      let wrapped_pp =
+        List.fold_left
+          (fun acc _ -> string "⟨_, " ^^ acc ^^ string "⟩")
+          inner_pp relevant_kids
+      in
+      opt_parens (string "." ^^ doc_id_ctor (fixup_match_id cons) ^^ space ^^ wrapped_pp)
   | P_var (p, _) -> doc_pat ctx in_match_bv p
   | P_as (pat, id) -> doc_pat ctx in_match_bv pat
   | P_struct (_, pats, _) ->
