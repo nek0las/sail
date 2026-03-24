@@ -306,19 +306,78 @@ and doc_typ ctx (Typ_aux (t, _) as typ) =
       parens (separate space [string "Result"; doc_typ ctx typ1; doc_typ ctx typ2])
   | Typ_var kid -> doc_kid ctx kid
   | Typ_app (id, args) -> parens (doc_id_ctor id ^^ space ^^ separate_map space (doc_typ_arg ctx `Only_relevant) args)
-  | Typ_exist (kids, _, typ) ->
-      let ctx =
-        List.fold_left
-          (fun ctx (KOpt_aux (KOpt_kind (_, kid), annot)) ->
-            add_single_kid_id_rename ctx (Id_aux (Id "_lean_wildcard", annot)) kid
-          )
-          ctx kids
-      in
-      doc_typ ctx typ
+  | Typ_exist (kids, _, body) ->
+    let body_doc = doc_typ ctx body in
+    List.fold_right
+      (fun kopt acc ->
+        let kid = kopt_kid kopt in
+        string "Sigma" ^^ space ^^ parens (string "fun " ^^ doc_kid ctx kid ^^ space ^^ string "=>" ^^ space ^^ acc)
+      )
+      kids body_doc
   | _ -> failwith ("Type " ^ string_of_typ_con typ ^ " " ^ string_of_typ typ ^ " not translatable yet.")
 
 and doc_typ_app ctx (A_aux (t, _) as typ) =
   match t with A_typ t' -> doc_typ ctx t' | A_bool nc -> doc_nconstraint ctx nc | A_nexp m -> doc_nexp ctx m
+
+(* Returns the set of type variables that will appear in the Lean output,
+   which may be smaller than those in the Sail type.
+   Adapted from coq_nvars_of_typ in pretty_print_coq.ml. *)
+let rec lean_nvars_of_typ (Typ_aux (t, _)) =
+  let trec = lean_nvars_of_typ in
+  match t with
+  | Typ_id _ -> KidSet.empty
+  | Typ_var kid -> KidSet.singleton kid
+  | Typ_fn (t1, t2) -> List.fold_left KidSet.union (trec t2) (List.map trec t1)
+  | Typ_tuple ts -> List.fold_left (fun s t -> KidSet.union s (trec t)) KidSet.empty ts
+  | Typ_app (Id_aux (Id "register", _), [A_aux (A_typ etyp, _)]) -> trec etyp
+  | Typ_app (Id_aux (Id "implicit", _), _)
+  | Typ_app (Id_aux (Id "atom", _), _)
+  | Typ_app (Id_aux (Id "atom_bool", _), _)
+  | Typ_app (Id_aux (Id "range", _), _) -> KidSet.empty
+  | Typ_app (_, tas) ->
+      List.fold_left (fun s ta -> KidSet.union s (lean_nvars_of_typ_arg ta)) KidSet.empty tas
+  | Typ_exist (kopts, _, t) ->
+      List.fold_left (fun vs kopt -> KidSet.remove (kopt_kid kopt) vs) (trec t) kopts
+  | _ -> KidSet.empty
+
+and lean_nvars_of_typ_arg (A_aux (ta, _)) =
+  match ta with
+  | A_nexp nexp -> tyvars_of_nexp nexp
+  | A_typ typ -> lean_nvars_of_typ typ
+  | A_bool nc -> tyvars_of_constraint nc
+
+(* Calculate the existential type bindings that should make it into the Lean output as dependent pairs.
+   Adapted from relevant_existential_vars/relevant_type_vars in pretty_print_coq.ml. *)
+let relevant_existential_vars kopts typ =
+  let relevant_kids = lean_nvars_of_typ typ in
+  List.filter (fun kopt -> KidSet.mem (kopt_kid kopt) relevant_kids) kopts
+
+let relevant_type_vars typ =
+  match typ with
+  | Typ_aux (Typ_exist (kopts, _nc, typ'), _) -> (relevant_existential_vars kopts typ', typ')
+  | _ -> ([], typ)
+
+(* Look up the argument type of a union constructor, instantiated against the matched union type.
+   Adapted from typ_of_constructor in pretty_print_coq.ml. *)
+let typ_of_constructor env f typ l =
+  let typq, ctor_typ = Env.get_union_id f env in
+  match Env.expand_synonyms (Env.add_typquant l typq env) ctor_typ with
+  | Typ_aux (Typ_fn ([arg_typ], ret_typ), _) -> begin
+      try
+        let goals = quant_kopts typq |> List.map kopt_kid |> KidSet.of_list in
+        let unifiers = unify l env goals ret_typ typ in
+        subst_unifiers unifiers arg_typ
+      with exc ->
+        raise
+          (Reporting.err_unreachable l __POS__
+             ("Unification error when pattern matching against union constructor: " ^ Printexc.to_string exc)
+          )
+    end
+  | _ ->
+      raise
+        (Reporting.err_unreachable l __POS__
+           ("Mal-formed constructor " ^ string_of_id f ^ " with type " ^ string_of_typ ctor_typ)
+        )
 
 let captured_typ_var ((i, Typ_aux (t, _)) as typ) =
   match t with
