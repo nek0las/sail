@@ -552,7 +552,21 @@ let rec update_ctx_pat (ctx : context) (P_aux (p, (l, annot)) as pat) =
       List.fold_left update_ctx_pat ctx pats
   | _ -> ctx
 
+(* Adapted from doc_pat/doc_pat_no_existential in pretty_print_coq.ml:
+   doc_pat checks if the pattern's own type is existential and wraps with ⟨_, inner⟩
+   for each relevant bound variable, then delegates to doc_pat_no_existential for the body.
+   This handles sub-patterns whose type is existential (e.g. a P_id bound to a Sigma). *)
 let rec doc_pat ?(need_parens = false) ?(in_vector = false) ctx in_match_bv (P_aux (p, (l, annot)) as pat) =
+  let env = env_of_tannot annot in
+  let pat_typ = Env.expand_synonyms env (typ_of_annot (l, annot)) in
+  let (relevant_kids, _) = relevant_type_vars pat_typ in
+  if relevant_kids <> [] then
+    let inner_pp = doc_pat_no_existential ~need_parens ~in_vector ctx in_match_bv pat in
+    List.fold_left (fun acc _ -> string "⟨_, " ^^ acc ^^ string "⟩") inner_pp relevant_kids
+  else
+    doc_pat_no_existential ~need_parens ~in_vector ctx in_match_bv pat
+
+and doc_pat_no_existential ?(need_parens = false) ?(in_vector = false) ctx in_match_bv (P_aux (p, (l, annot)) as pat) =
   let opt_parens doc = if need_parens then parens doc else doc in
   let env = env_of_tannot annot in
   match p with
@@ -580,7 +594,7 @@ let rec doc_pat ?(need_parens = false) ?(in_vector = false) ctx in_match_bv (P_a
   | P_vector_concat pats -> doc_vector_concat pats
   | P_app (Id_aux (Id "None", _), p) -> string "none"
   | P_app (cons, pats) ->
-      (* Adapted from doc_pat/doc_pat_no_existential in pretty_print_coq.ml:
+      (* Adapted from doc_pat_no_existential in pretty_print_coq.ml:
          if the constructor's argument type is an existential, wrap the inner
          pattern with ⟨_, inner⟩ for each relevant bound variable. *)
       let matched_typ = typ_of_annot (l, annot) in
