@@ -1116,6 +1116,18 @@ let doc_funcl_init global (FCL_aux (FCL_funcl (id, pexp), annot)) =
            (*failwith "Argument pattern not translatable yet."*)
        )
   in
+  let fnpat =
+    let pat_of_binder (pat, id, typ) =
+      match string_of_id id with "_" -> pat | _ -> P_aux (P_id id, (pat_loc pat, mk_tannot env typ))
+    in
+    match binders with
+    | [binder] -> pat_of_binder binder
+    | _ ->
+        P_aux
+          ( P_tuple (List.map pat_of_binder binders),
+            (pat_loc pat, mk_tannot env (tuple_typ (List.map (fun (_, _, typ) -> typ) binders)))
+          )
+  in
   let ctx = context_init env global in
   let ctx, binders, fixup_binders =
     List.fold_left
@@ -1155,7 +1167,8 @@ let doc_funcl_init global (FCL_aux (FCL_funcl (id, pexp), annot)) =
     separate space
       (remove_empties [partiality; computability; string "def"; doc_id_ctor id] @ binders @ [colon] @ decl_val),
     ctx,
-    fixup_binders
+    fixup_binders,
+    fnpat
   )
 
 let mapping_regex = Str.regexp "_\\(forward\\|backwards\\)\\(_matches\\)?$"
@@ -1202,8 +1215,7 @@ let pat_of_funcl (FCL_aux (FCL_funcl (_, funcl), _)) =
   match funcl with Pat_aux (Pat_exp (pat, _), _) -> pat | Pat_aux (Pat_when (pat, _, _), _) -> pat
 
 let doc_funcl ctx meas funcl =
-  let comment, signature, ctx, fixup_binders = doc_funcl_init ctx.global funcl in
-  let fnpat = pat_of_funcl funcl in
+  let comment, signature, ctx, fixup_binders, fnpat = doc_funcl_init ctx.global funcl in
   let termination = doc_termination ctx fnpat meas in
   comment ^^ nest 2 (signature ^^ hardline ^^ doc_funcl_body fixup_binders ctx funcl) ^^ termination
 
